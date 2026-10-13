@@ -27,7 +27,7 @@ object Notifier {
         manager.createNotificationChannel(channel)
     }
 
-    fun show(context: Context, text: String, openChat: Boolean) {
+    fun show(context: Context, text: String, conversationId: Long? = null) {
         ensureChannel(context)
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = ContextCompat.checkSelfPermission(
@@ -38,7 +38,10 @@ object Notifier {
         }
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            if (openChat) putExtra(MainActivity.EXTRA_OPEN_CHAT, true)
+            putExtra(MainActivity.EXTRA_OPEN_CHAT, true)
+            if (conversationId != null && conversationId > 0L) {
+                putExtra(MainActivity.EXTRA_CONVERSATION_ID, conversationId)
+            }
         }
         val contentIntent = PendingIntent.getActivity(
             context,

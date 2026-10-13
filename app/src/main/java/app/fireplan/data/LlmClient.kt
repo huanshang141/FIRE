@@ -13,10 +13,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
 const val DEFAULT_SYSTEM_PROMPT =
-    "你是中文 FIRE 陪跑。鼓励用户当天去上班，并把储蓄坚持下去。只使用给出的数字，不要编造净资产、收入、支出或日期。不要把建议说成投资承诺或收益保证。回答简短、具体、务实。"
+    "你是中文 FIRE 陪跑。鼓励用户当天去上班，并把储蓄坚持下去。只使用给出的数字，并点出上下文里已有的一个数字。不要编造净资产、收入、支出或日期。不要把建议说成投资承诺或收益保证。回答简短、具体、务实。"
 
 const val DAILY_ENCOURAGEMENT_REQUEST =
-    "根据当前进度写一段 80 字以内的开工鼓励，并写进具体数字"
+    "根据当前进度写三段短句，分开写：第一句点出上下文里已经给出的一个数字；第二句是今天去上班的理由；第三句是一个可以回答的问题。不要编造数字，不要写成一段打气文案。"
 
 const val MISSING_CONFIG_MESSAGE = "请先在设置中填写接口地址、API Key 和模型名"
 

@@ -1,6 +1,7 @@
 package app.fireplan.data.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "goal")
@@ -25,11 +26,27 @@ data class NetWorthSnapshotEntity(
     val recordedAt: Long,
 )
 
-@Entity(tableName = "chat_messages")
+@Entity(tableName = "conversations")
+data class ConversationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val kind: String,
+    val dayKey: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val titleLocked: Boolean,
+)
+
+@Entity(
+    tableName = "chat_messages",
+    indices = [Index("conversationId")],
+)
 data class ChatMessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val conversationId: Long = 0,
     val role: String,
     val content: String,
     val createdAt: Long,
     val error: String? = null,
+    val kind: String = "message",
 )

@@ -47,7 +47,7 @@ private val tabs = listOf(
 )
 
 @Composable
-fun FireApp(openChatToken: Int, factory: ViewModelProvider.Factory) {
+fun FireApp(openChatToken: Int, openConversationId: Long, factory: ViewModelProvider.Factory) {
     CompositionLocalProvider(LocalViewModelFactory provides factory) {
         val context = LocalContext.current
         val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -110,7 +110,19 @@ fun FireApp(openChatToken: Int, factory: ViewModelProvider.Factory) {
             ) {
                 composable("progress") { ProgressScreen(onEdit = { nav.navigate("editor") }) }
                 composable("editor") { GoalEditorScreen(onBack = { nav.popBackStack() }) }
-                composable("chat") { ChatScreen() }
+                composable("chat") {
+                    ChatScreen(
+                        openToken = openChatToken,
+                        openConversationId = openConversationId,
+                        onOpenProgress = {
+                            nav.navigate("progress") {
+                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                    )
+                }
                 composable("settings") { SettingsScreen() }
             }
         }

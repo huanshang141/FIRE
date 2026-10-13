@@ -2,19 +2,21 @@ package app.fireplan.data
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * One lock for chat turns and the daily reminder, plus an epoch that clear() bumps
- * so a request that started earlier cannot write back into an emptied transcript.
+ * One lock for chat turns and the daily reminder. Deleting a conversation bumps
+ * only that conversation, so an in-flight request cannot write back into it.
  */
 object Conversation {
     private val mutex = Mutex()
-    private val epoch = AtomicLong(0)
+    private val generations = ConcurrentHashMap<Long, Long>()
 
-    fun epoch(): Long = epoch.get()
+    fun generation(conversationId: Long): Long = generations[conversationId] ?: 0L
 
-    fun bumpEpoch(): Long = epoch.incrementAndGet()
+    fun bump(conversationId: Long): Long {
+        return generations.merge(conversationId, 1L) { current, _ -> current + 1L }!!
+    }
 
     suspend fun <T> exclusive(block: suspend () -> T): T = mutex.withLock { block() }
 }

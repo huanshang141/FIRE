@@ -28,12 +28,39 @@ interface SnapshotDao {
 }
 
 @Dao
-interface ChatDao {
-    @Query("SELECT * FROM chat_messages ORDER BY id ASC")
-    fun observeAll(): Flow<List<ChatMessageEntity>>
+interface ConversationDao {
+    @Query("SELECT * FROM conversations ORDER BY updatedAt DESC, id DESC")
+    fun observeAll(): Flow<List<ConversationEntity>>
 
-    @Query("SELECT * FROM chat_messages ORDER BY id ASC")
-    suspend fun listAll(): List<ChatMessageEntity>
+    @Query("SELECT * FROM conversations ORDER BY updatedAt DESC, id DESC")
+    suspend fun listAll(): List<ConversationEntity>
+
+    @Query("SELECT * FROM conversations WHERE id = :id")
+    suspend fun get(id: Long): ConversationEntity?
+
+    @Query("SELECT * FROM conversations WHERE kind = :kind AND dayKey = :dayKey LIMIT 1")
+    suspend fun findByKindAndDay(kind: String, dayKey: String): ConversationEntity?
+
+    @Insert
+    suspend fun insert(conversation: ConversationEntity): Long
+
+    @Query("UPDATE conversations SET title = :title, titleLocked = :titleLocked, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateTitle(id: Long, title: String, titleLocked: Boolean, updatedAt: Long)
+
+    @Query("UPDATE conversations SET updatedAt = :updatedAt WHERE id = :id")
+    suspend fun touch(id: Long, updatedAt: Long)
+
+    @Query("DELETE FROM conversations WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
+@Dao
+interface ChatDao {
+    @Query("SELECT * FROM chat_messages WHERE conversationId = :conversationId ORDER BY id ASC")
+    fun observe(conversationId: Long): Flow<List<ChatMessageEntity>>
+
+    @Query("SELECT * FROM chat_messages WHERE conversationId = :conversationId ORDER BY id ASC")
+    suspend fun list(conversationId: Long): List<ChatMessageEntity>
 
     @Insert
     suspend fun insert(message: ChatMessageEntity): Long
@@ -41,6 +68,6 @@ interface ChatDao {
     @Query("DELETE FROM chat_messages WHERE id = :id")
     suspend fun deleteById(id: Long)
 
-    @Query("DELETE FROM chat_messages")
-    suspend fun deleteAll()
+    @Query("DELETE FROM chat_messages WHERE conversationId = :conversationId")
+    suspend fun deleteForConversation(conversationId: Long)
 }

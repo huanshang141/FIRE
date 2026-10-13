@@ -17,9 +17,10 @@ class ReminderReceiver : BroadcastReceiver() {
             .apply { acquire(90_000L) }
         Thread({
             try {
-                DailyReminder.execute(app)
+                val result = DailyReminder.execute(app)
+                if (result != null) Notifier.show(app, result.text, result.conversationId)
             } catch (error: Throwable) {
-                Notifier.show(app, userVisibleLlmError(error), openChat = true)
+                Notifier.show(app, userVisibleLlmError(error))
             } finally {
                 if (wakeLock.isHeld) wakeLock.release()
                 pending.finish()

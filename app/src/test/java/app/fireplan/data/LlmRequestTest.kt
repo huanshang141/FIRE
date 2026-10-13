@@ -59,6 +59,12 @@ class LlmRequestTest {
         assertEquals(DAILY_ENCOURAGEMENT_REQUEST, messages.last().content)
         assertEquals("system", messages[0].role)
         assertEquals("system", messages[1].role)
+        assertFalse(DAILY_ENCOURAGEMENT_REQUEST.contains("80"))
+        assertTrue(DAILY_ENCOURAGEMENT_REQUEST.contains("三段短句"))
+        assertTrue(DAILY_ENCOURAGEMENT_REQUEST.contains("不要编造"))
+        assertTrue(DEFAULT_SYSTEM_PROMPT.contains("一个数字"))
+        assertTrue(DEFAULT_SYSTEM_PROMPT.contains("不要编造"))
+        assertTrue(TODAY_REPLY_CHIPS.none { it.label == DAILY_ENCOURAGEMENT_REQUEST })
     }
 
     @Test
