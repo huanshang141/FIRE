@@ -2,6 +2,7 @@ package app.fireplan.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -18,6 +19,8 @@ const val DAILY_ENCOURAGEMENT_REQUEST =
     "根据当前进度写一段 80 字以内的开工鼓励，并写进具体数字"
 
 const val MISSING_CONFIG_MESSAGE = "请先在设置中填写接口地址、API Key 和模型名"
+
+const val INCOMPLETE_STREAM_MESSAGE = "请求失败：响应在结束前中断"
 
 data class ChatTurn(val role: String, val content: String)
 
@@ -104,6 +107,10 @@ fun extractErrorMessage(json: String): String? {
     return jsonStringAfter(json, "\"message\"", from)
 }
 
+fun requireCompletedStream(sawDone: Boolean) {
+    if (!sawDone) throw LlmException(null, INCOMPLETE_STREAM_MESSAGE)
+}
+
 fun formatHttpError(code: Int, raw: String): String {
     val detail = extractErrorMessage(raw) ?: raw.trim().take(800)
     return if (detail.isBlank()) "HTTP $code" else "HTTP $code：$detail"
@@ -144,23 +151,42 @@ class LlmClient(
                 }
                 val source = payload.source()
                 val accumulated = StringBuilder()
-                while (true) {
-                    coroutineContext.ensureActive()
-                    val line = source.readUtf8Line() ?: break
-                    val trimmed = line.trim()
-                    if (trimmed.startsWith("{") && trimmed.contains("\"error\"")) {
-                        throw LlmException(response.code, formatHttpError(response.code, trimmed))
+                var sawDone = false
+                try {
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val line = try {
+                            source.readUtf8Line()
+                        } catch (io: java.io.IOException) {
+                            if (!coroutineContext.isActive) {
+                                throw kotlinx.coroutines.CancellationException("已停止", io)
+                            }
+                            throw io
+                        } ?: break
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("{") && trimmed.contains("\"error\"")) {
+                            throw LlmException(response.code, formatHttpError(response.code, trimmed))
+                        }
+                        val data = sseData(line) ?: continue
+                        if (data == "[DONE]") {
+                            sawDone = true
+                            break
+                        }
+                        if (data.contains("\"error\"") && deltaContent(data) == null) {
+                            throw LlmException(response.code, formatHttpError(response.code, data))
+                        }
+                        val piece = deltaContent(data) ?: continue
+                        if (piece.isEmpty()) continue
+                        accumulated.append(piece)
+                        onDelta(piece)
                     }
-                    val data = sseData(line) ?: continue
-                    if (data == "[DONE]") break
-                    if (data.contains("\"error\"") && deltaContent(data) == null) {
-                        throw LlmException(response.code, formatHttpError(response.code, data))
+                } catch (io: java.io.IOException) {
+                    if (!coroutineContext.isActive) {
+                        throw kotlinx.coroutines.CancellationException("已停止", io)
                     }
-                    val piece = deltaContent(data) ?: continue
-                    if (piece.isEmpty()) continue
-                    accumulated.append(piece)
-                    onDelta(piece)
+                    throw io
                 }
+                requireCompletedStream(sawDone)
                 accumulated.toString()
             }
         }

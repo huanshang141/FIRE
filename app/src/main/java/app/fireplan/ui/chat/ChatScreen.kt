@@ -37,6 +37,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,12 +46,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.fireplan.data.ChatTurn
+import app.fireplan.data.Conversation
 import app.fireplan.data.DEFAULT_SYSTEM_PROMPT
 import app.fireplan.data.EncryptedConfig
 import app.fireplan.data.FireRepository
 import app.fireplan.data.LlmClient
 import app.fireplan.data.assembleMessages
 import app.fireplan.data.db.ChatMessageEntity
+import app.fireplan.data.retrySelection
 import app.fireplan.data.toInput
 import app.fireplan.data.userVisibleLlmError
 import app.fireplan.domain.FireCalculator
@@ -61,14 +64,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = FireRepository.get(app)
-    private val config = EncryptedConfig(app)
+    private val configResult = runCatching { EncryptedConfig(app) }
+    private val config = configResult.getOrNull()
     private val client = LlmClient()
-    private val gate = Mutex()
     private var job: Job? = null
     private var generation by mutableIntStateOf(0)
 
@@ -87,29 +88,53 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val text = input.trim()
         if (text.isEmpty() || streaming) return
         input = ""
+        if (config == null) {
+            viewModelScope.launch {
+                repo.insertMessage(role = "user", content = text, error = null)
+                repo.insertMessage(
+                    role = "assistant",
+                    content = "",
+                    error = "无法读取加密配置：${configResult.exceptionOrNull()?.message ?: "未知错误"}",
+                )
+            }
+            return
+        }
+        streaming = true
         val gen = generation
         job = viewModelScope.launch {
-            gate.withLock {
-                if (gen != generation) return@launch
-                repo.insertMessage(role = "user", content = text, error = null)
+            try {
+                streamReply(text, gen, explicitHistory = null, persistUser = true)
+            } finally {
+                if (gen == generation) {
+                    streaming = false
+                    streamingText = null
+                }
             }
-            if (gen != generation) return@launch
-            streamReply(text, gen)
         }
     }
 
-    fun retry() {
-        if (streaming) return
+    fun retry(errorId: Long) {
+        if (streaming || errorId <= 0L) return
+        if (config == null) return
+        streaming = true
         val gen = generation
         job = viewModelScope.launch {
-            val userText = gate.withLock {
-                val all = repo.listMessages()
-                val lastUser = all.lastOrNull { it.role == "user" } ?: return@withLock null
-                all.filter { it.id > lastUser.id }.forEach { repo.deleteMessage(it.id) }
-                lastUser.content
-            } ?: return@launch
-            if (gen != generation) return@launch
-            streamReply(userText, gen)
+            try {
+                val selection = Conversation.exclusive {
+                    if (gen != generation) return@exclusive null
+                    val all = repo.listMessages()
+                    val chosen = retrySelection(all, errorId) ?: return@exclusive null
+                    repo.deleteMessage(errorId)
+                    chosen
+                } ?: return@launch
+                if (gen != generation) return@launch
+                streamReply(selection.userText, gen, selection.history, persistUser = false)
+            } finally {
+                if (gen == generation) {
+                    streaming = false
+                    streamingText = null
+                }
+            }
         }
     }
 
@@ -119,9 +144,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clear() {
         val gen = ++generation
+        Conversation.bumpEpoch()
         job?.cancel()
         viewModelScope.launch {
-            gate.withLock {
+            Conversation.exclusive {
                 repo.clearMessages()
                 if (gen == generation) {
                     streaming = false
@@ -131,40 +157,58 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun streamReply(userText: String, gen: Int) {
+    private suspend fun streamReply(
+        userText: String,
+        gen: Int,
+        explicitHistory: List<ChatTurn>?,
+        persistUser: Boolean,
+    ) {
+        val savedConfig = config ?: return
         streaming = true
         streamingText = ""
         val buffer = StringBuilder()
+        val seen = Conversation.epoch()
         try {
-            val settings = config.toSettings()
-            val goal = repo.getGoal()
-            val inputModel = goal?.toInput()
-            val projection = inputModel?.let { FireCalculator.calculate(it) }
-            val history = repo.listMessages()
-                .filter { it.error == null && it.content.isNotBlank() && it.role in setOf("user", "assistant") }
-                .map { ChatTurn(it.role, it.content) }
-                .let { turns ->
-                    if (turns.lastOrNull()?.role == "user" && turns.last().content == userText) {
-                        turns.dropLast(1)
-                    } else {
-                        turns
-                    }
+            Conversation.exclusive {
+                if (gen != generation || seen != Conversation.epoch()) return@exclusive
+                if (persistUser) {
+                    repo.insertMessage(role = "user", content = userText, error = null)
                 }
-            val reply = client.stream(
-                settings = settings,
-                messages = assembleMessages(
-                    systemPrompt = settings.systemPrompt.ifBlank { DEFAULT_SYSTEM_PROMPT },
-                    progressContext = buildProgressContext(inputModel, projection),
-                    history = history,
-                    userInput = userText,
-                ),
-            ) { delta ->
-                buffer.append(delta)
-                if (gen == generation) streamingText = buffer.toString()
-            }
-            if (gen != generation) return
-            gate.withLock {
-                if (gen != generation) return@withLock
+                val history = explicitHistory ?: repo.listMessages()
+                    .mapNotNull { message ->
+                        if (
+                            message.error == null &&
+                            message.content.isNotBlank() &&
+                            message.role in setOf("user", "assistant")
+                        ) {
+                            ChatTurn(message.role, message.content)
+                        } else {
+                            null
+                        }
+                    }
+                    .let { turns ->
+                        if (turns.lastOrNull()?.role == "user" && turns.last().content == userText) {
+                            turns.dropLast(1)
+                        } else {
+                            turns
+                        }
+                    }
+                val goal = repo.getGoal()
+                val inputModel = goal?.toInput()
+                val projection = inputModel?.let { FireCalculator.calculate(it) }
+                val reply = client.stream(
+                    settings = savedConfig.toSettings(),
+                    messages = assembleMessages(
+                        systemPrompt = savedConfig.toSettings().systemPrompt.ifBlank { DEFAULT_SYSTEM_PROMPT },
+                        progressContext = buildProgressContext(inputModel, projection),
+                        history = history,
+                        userInput = userText,
+                    ),
+                ) { delta ->
+                    buffer.append(delta)
+                    if (gen == generation) streamingText = buffer.toString()
+                }
+                if (gen != generation || seen != Conversation.epoch()) return@exclusive
                 if (reply.isBlank()) {
                     repo.insertMessage("assistant", "", "请求失败：模型返回了空内容")
                 } else {
@@ -173,24 +217,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         } catch (cancel: CancellationException) {
             val partial = buffer.toString()
-            if (gen == generation && partial.isNotBlank()) {
-                gate.withLock {
-                    if (gen == generation) repo.insertMessage("assistant", partial, null)
+            if (gen == generation && seen == Conversation.epoch() && partial.isNotBlank()) {
+                Conversation.exclusive {
+                    if (gen == generation && seen == Conversation.epoch()) {
+                        repo.insertMessage("assistant", partial, null)
+                    }
                 }
             }
             throw cancel
         } catch (error: Exception) {
-            if (gen == generation) {
-                gate.withLock {
-                    if (gen == generation) {
+            if (gen == generation && seen == Conversation.epoch()) {
+                Conversation.exclusive {
+                    if (gen == generation && seen == Conversation.epoch()) {
                         repo.insertMessage("assistant", buffer.toString(), userVisibleLlmError(error))
                     }
                 }
-            }
-        } finally {
-            if (gen == generation) {
-                streaming = false
-                streamingText = null
             }
         }
     }
@@ -201,7 +242,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 fun ChatScreen(viewModel: ChatViewModel = viewModel(factory = LocalViewModelFactory.current)) {
     val stored by viewModel.messages.collectAsState()
     val streamingText = viewModel.streamingText
-    var confirmClear by mutableStateOf(false)
+    var confirmClear by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val bubbles = buildList {
         addAll(stored)
@@ -249,8 +290,8 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel(factory = LocalViewModelFact
                 items(bubbles, key = { if (it.id == -1L) "streaming" else it.id }) { message ->
                     Bubble(
                         message = message,
-                        onRetry = viewModel::retry,
-                        showRetry = message.error != null && !viewModel.streaming,
+                        onRetry = { viewModel.retry(message.id) },
+                        showRetry = message.id > 0L && message.error != null && !viewModel.streaming,
                     )
                 }
             }

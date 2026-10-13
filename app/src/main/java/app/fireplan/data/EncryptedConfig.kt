@@ -41,6 +41,27 @@ class EncryptedConfig(context: Context) {
         get() = prefs.getInt(KEY_MINUTE, DEFAULT_MINUTE)
         set(value) = prefs.edit().putInt(KEY_MINUTE, value.coerceIn(0, 59)).apply()
 
+    fun saveSnapshot(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        temperature: Float,
+        systemPrompt: String,
+        reminderHour: Int,
+        reminderMinute: Int,
+    ) {
+        val wrote = prefs.edit()
+            .putString(KEY_BASE_URL, baseUrl.trim())
+            .putString(KEY_API_KEY, apiKey.trim())
+            .putString(KEY_MODEL, model.trim())
+            .putFloat(KEY_TEMPERATURE, temperature.coerceIn(0f, 2f))
+            .putString(KEY_SYSTEM_PROMPT, systemPrompt)
+            .putInt(KEY_HOUR, reminderHour.coerceIn(0, 23))
+            .putInt(KEY_MINUTE, reminderMinute.coerceIn(0, 59))
+            .commit()
+        if (!wrote) error("设置没有写入")
+    }
+
     fun toSettings(): LlmSettings = LlmSettings(
         baseUrl = baseUrl,
         apiKey = apiKey,

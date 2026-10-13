@@ -40,6 +40,7 @@ import app.fireplan.ui.LocalViewModelFactory
 import app.fireplan.ui.formatPercentInput
 import app.fireplan.ui.formatPlain
 import app.fireplan.ui.parseNumber
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 class GoalEditorViewModel(app: Application) : AndroidViewModel(app) {
@@ -80,9 +81,16 @@ class GoalEditorViewModel(app: Application) : AndroidViewModel(app) {
         error = null
         saving = true
         viewModelScope.launch {
-            repo.saveGoal(parsed)
-            saving = false
-            onSaved()
+            try {
+                repo.saveGoal(parsed)
+                onSaved()
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                this@GoalEditorViewModel.error = "保存失败：${error.message ?: "未知错误"}"
+            } finally {
+                saving = false
+            }
         }
     }
 

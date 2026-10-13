@@ -51,7 +51,8 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
-    private val config = EncryptedConfig(app)
+    private val configResult = runCatching { EncryptedConfig(app) }
+    private val config = configResult.getOrNull()
 
     var baseUrl by mutableStateOf("")
     var apiKey by mutableStateOf("")
@@ -64,17 +65,22 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     var loadError by mutableStateOf<String?>(null)
 
     init {
-        viewModelScope.launch {
-            try {
-                baseUrl = config.baseUrl
-                apiKey = config.apiKey
-                model = config.model
-                temperature = config.temperature
-                systemPrompt = config.systemPrompt
-                hour = config.reminderHour
-                minute = config.reminderMinute
-            } catch (error: Throwable) {
-                loadError = "无法读取加密配置：${error.message ?: "未知错误"}"
+        val saved = config
+        if (saved == null) {
+            loadError = "无法读取加密配置：${configResult.exceptionOrNull()?.message ?: "未知错误"}"
+        } else {
+            viewModelScope.launch {
+                try {
+                    baseUrl = saved.baseUrl
+                    apiKey = saved.apiKey
+                    model = saved.model
+                    temperature = saved.temperature
+                    systemPrompt = saved.systemPrompt
+                    hour = saved.reminderHour
+                    minute = saved.reminderMinute
+                } catch (error: Throwable) {
+                    loadError = "无法读取加密配置：${error.message ?: "未知错误"}"
+                }
             }
         }
     }
@@ -84,14 +90,22 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun save() {
+        val savedConfig = config
+        if (savedConfig == null) {
+            saved = false
+            loadError = "无法读取加密配置：${configResult.exceptionOrNull()?.message ?: "未知错误"}"
+            return
+        }
         try {
-            config.baseUrl = baseUrl
-            config.apiKey = apiKey
-            config.model = model
-            config.temperature = temperature
-            config.systemPrompt = systemPrompt
-            config.reminderHour = hour
-            config.reminderMinute = minute
+            savedConfig.saveSnapshot(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                model = model,
+                temperature = temperature,
+                systemPrompt = systemPrompt,
+                reminderHour = hour,
+                reminderMinute = minute,
+            )
             AlarmScheduler.schedule(getApplication(), hour, minute)
             saved = true
             loadError = null
@@ -99,6 +113,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             saved = false
             loadError = "保存失败：${error.message ?: "未知错误"}"
         }
+    }
+
+    fun rescheduleSavedAlarm() {
+        val savedConfig = config ?: return
+        AlarmScheduler.schedule(getApplication(), savedConfig.reminderHour, savedConfig.reminderMinute)
     }
 }
 
@@ -111,7 +130,13 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel(factory = LocalViewM
     var showClock by remember { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) exact = AlarmScheduler.canExact(context)
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val nowExact = AlarmScheduler.canExact(context)
+                if (nowExact != exact) {
+                    exact = nowExact
+                    viewModel.rescheduleSavedAlarm()
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

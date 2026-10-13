@@ -3,6 +3,7 @@ package app.fireplan.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -112,5 +113,8 @@ class LlmRequestTest {
         assertEquals("a\"b\n", deltaContent("""{"choices":[{"delta":{"content":"a\"b\n"}}]}"""))
         assertEquals("bad key", extractErrorMessage("""{"error":{"message":"bad key","type":"auth"}}"""))
         assertEquals("HTTP 401：bad key", formatHttpError(401, """{"error":{"message":"bad key"}}"""))
+        val incomplete = assertThrows(LlmException::class.java) { requireCompletedStream(false) }
+        assertEquals(INCOMPLETE_STREAM_MESSAGE, incomplete.message)
+        requireCompletedStream(true)
     }
 }
